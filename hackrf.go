@@ -340,8 +340,6 @@ var BasebandFilterBandwidth = []uint32{
 // Valid/preferred sample rates (MHz):
 // 8, 10, 12.5, 16, 20
 
-// hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz);
-
 type RFPathFilter uint32
 
 const (
@@ -437,4 +435,14 @@ func (h HackRF) SetAntennaPower(enable bool) error {
 		(*C.hackrf_device)(h.ptr),
 		(C.uint8_t)(value),
 	))
+}
+
+// uint32_t hackrf_compute_baseband_filter_bw_round_down_lt(const uint32_t bandwidth_hz);
+func ComputeBaseBandFilterBWNearest(freq uint32) (bw uint32) {
+	return uint32(C.hackrf_compute_baseband_filter_bw_round_down_lt((C.uint32_t)(freq)))
+}
+
+// uint32_t hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz);
+func ComputeBaseBandFilterBWBest(freq uint32) (bw uint32) {
+	return uint32(C.hackrf_compute_baseband_filter_bw((C.uint32_t)(freq)))
 }
