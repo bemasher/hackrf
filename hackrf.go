@@ -1,8 +1,7 @@
 package hackrf
 
 /*
-#cgo windows CFLAGS: -I.
-#cgo windows LDFLAGS: -lhackrf -L.
+#cgo windows LDFLAGS: -lhackrf -lusb-1.0 -L.
 #include "hackrf.h"
 
 extern void go_callback(hackrf_transfer);
@@ -17,6 +16,10 @@ import (
 	"unsafe"
 )
 
+const MaxArrayLen = 1<<31 - 1
+
+// HackRFError handles all of the possible error values returned by any of the
+// methods avialable on a HackRF device.
 type HackRFError int
 
 const (
@@ -76,6 +79,38 @@ func Error(e C.int) error {
 	return HackRFError(e)
 }
 
+// Init must be called before any other methods. Init() should be paired with
+// defer Exit().
+func Init() error {
+	return Error(C.hackrf_init())
+}
+
+func Exit() error {
+	return Error(C.hackrf_exit())
+}
+
+// HackRF allows control of a single HackRF device.
+type HackRF struct {
+	ptr *C.hackrf_device
+}
+
+func (h *HackRF) Open() error {
+	var dev *C.hackrf_device
+	err := Error(C.hackrf_open((**C.hackrf_device)(&dev)))
+	h.ptr = dev
+
+	return err
+}
+
+func (h *HackRF) OpenBySerial() error {
+	return nil
+}
+
+func (h *HackRF) Close() error {
+	return Error(C.hackrf_close((*C.hackrf_device)(h.ptr)))
+}
+
+// BoardID identifies the hardware version of the device in use.
 type BoardID byte
 
 const (
@@ -96,79 +131,6 @@ func (bid BoardID) String() string {
 	return "InvalidBoardID"
 }
 
-type HardwareID struct {
-	PartID   [2]uint32
-	SerialNo [4]uint32
-}
-
-func (hid HardwareID) String() string {
-	return fmt.Sprintf("{PartID: %08X SerialNo: %08X}", hid.PartID, hid.SerialNo)
-}
-
-type HackRF struct {
-	ptr *C.hackrf_device
-}
-
-// hackrf_init()
-func (h HackRF) Init() error {
-	return Error(C.hackrf_init())
-}
-
-// hackrf_open(hackrf_device** device)
-func (h *HackRF) Open() error {
-	h.ptr = new(C.hackrf_device)
-	return Error(C.hackrf_open((**C.hackrf_device)(&h.ptr)))
-}
-
-// hackrf_close(hackrf_device* device)
-func (h *HackRF) Close() error {
-	return Error(C.hackrf_close((*C.hackrf_device)(h.ptr)))
-}
-
-// hackrf_exit()
-func (h *HackRF) Exit() error {
-	return Error(C.hackrf_exit())
-}
-
-type CallbackFunc func([]int8) int
-
-// hackrf_start_rx(hackrf_device* device, hackrf_sample_block_cb_fn callback, void* rx_ctx)
-func (h *HackRF) StartRX(callback CallbackFunc) error {
-	localCallback = callback
-
-	return Error(C.hackrf_start_rx(
-		(*C.hackrf_device)(h.ptr),
-		(C.hackrf_sample_block_cb_fn)(C.get_go_cb()),
-		nil,
-	))
-}
-
-// hackrf_stop_rx(hackrf_device* device)
-func (h *HackRF) StopRX() error {
-	return Error(C.hackrf_stop_rx(
-		(*C.hackrf_device)(h.ptr),
-	))
-}
-
-// hackrf_start_tx(hackrf_device* device, hackrf_sample_block_cb_fn callback, void* tx_ctx);
-func (h *HackRF) StartTX(callback CallbackFunc) error {
-	localCallback = callback
-
-	return Error(C.hackrf_start_tx(
-		(*C.hackrf_device)(h.ptr),
-		(C.hackrf_sample_block_cb_fn)(C.get_go_cb()),
-		nil,
-	))
-}
-
-// hackrf_stop_tx(hackrf_device* device);
-func (h *HackRF) StopTX() error {
-	return Error(C.hackrf_stop_tx(
-		(*C.hackrf_device)(h.ptr),
-	))
-}
-
-// hackrf_board_id_read(hackrf_device* device, uint8_t* value)
 func (h HackRF) BoardID() (bid BoardID, err error) {
 	err = Error(C.hackrf_board_id_read(
 		(*C.hackrf_device)(h.ptr),
@@ -177,7 +139,22 @@ func (h HackRF) BoardID() (bid BoardID, err error) {
 	return bid, err
 }
 
-// hackrf_board_partid_serialno_read(hackrf_device* device, read_partid_serialno_t* read_partid_serialno)
+type SerialNumber [4]uint32
+
+func (sn SerialNumber) String() string {
+	return fmt.Sprintf("%08X", sn[:])
+}
+
+// HardwareID contains both a Part ID and a Serial Number unique to the device in use.
+type HardwareID struct {
+	PartID       [2]uint32
+	SerialNumber SerialNumber
+}
+
+func (hid HardwareID) String() string {
+	return fmt.Sprintf("{PartID: %08X SerialNumber: %08X}", hid.PartID, hid.SerialNumber)
+}
+
 func (h HackRF) HardwareID() (hid HardwareID, err error) {
 	err = Error(C.hackrf_board_partid_serialno_read(
 		(*C.hackrf_device)(h.ptr),
@@ -186,7 +163,6 @@ func (h HackRF) HardwareID() (hid HardwareID, err error) {
 	return hid, err
 }
 
-// hackrf_version_string_read(hackrf_device* device, char* version, uint8_t length)
 func (h HackRF) Version() (str string, err error) {
 	version := make([]C.char, 256)
 	err = Error(C.hackrf_version_string_read(
@@ -199,7 +175,42 @@ func (h HackRF) Version() (str string, err error) {
 	return str, err
 }
 
-// hackrf_is_streaming(hackrf_device* device)
+type CallbackFunc func([]int8) int
+
+func (h *HackRF) StartRX(callback CallbackFunc) error {
+	localCallback = callback
+
+	return Error(C.hackrf_start_rx(
+		(*C.hackrf_device)(h.ptr),
+		(C.hackrf_sample_block_cb_fn)(C.get_go_cb()),
+		nil,
+	))
+}
+
+func (h *HackRF) StopRX() error {
+	localCallback = nil
+	return Error(C.hackrf_stop_rx(
+		(*C.hackrf_device)(h.ptr),
+	))
+}
+
+func (h *HackRF) StartTX(callback CallbackFunc) error {
+	localCallback = callback
+
+	return Error(C.hackrf_start_tx(
+		(*C.hackrf_device)(h.ptr),
+		(C.hackrf_sample_block_cb_fn)(C.get_go_cb()),
+		nil,
+	))
+}
+
+func (h *HackRF) StopTX() error {
+	localCallback = nil
+	return Error(C.hackrf_stop_tx(
+		(*C.hackrf_device)(h.ptr),
+	))
+}
+
 func (h HackRF) IsStreaming() (isStreaming bool, err error) {
 	result := Error(C.hackrf_is_streaming(
 		(*C.hackrf_device)(h.ptr),
@@ -212,7 +223,6 @@ func (h HackRF) IsStreaming() (isStreaming bool, err error) {
 	return result == True, err
 }
 
-// hackrf_max2837_read(hackrf_device* device, uint8_t register_number, uint16_t* value)
 func (h HackRF) Max2837Read(register uint8, value uint16) error {
 	return Error(C.hackrf_max2837_read(
 		(*C.hackrf_device)(h.ptr),
@@ -221,7 +231,6 @@ func (h HackRF) Max2837Read(register uint8, value uint16) error {
 	))
 }
 
-// hackrf_max2837_write(hackrf_device* device, uint8_t register_number, uint16_t value)
 func (h HackRF) Max2837Write(register uint8, value uint16) error {
 	return Error(C.hackrf_max2837_write(
 		(*C.hackrf_device)(h.ptr),
@@ -230,7 +239,6 @@ func (h HackRF) Max2837Write(register uint8, value uint16) error {
 	))
 }
 
-// hackrf_si5351c_read(hackrf_device* device, uint16_t register_number, uint16_t* value)
 func (h HackRF) SI5351CRead(register, value uint16) error {
 	return Error(C.hackrf_si5351c_read(
 		(*C.hackrf_device)(h.ptr),
@@ -239,7 +247,6 @@ func (h HackRF) SI5351CRead(register, value uint16) error {
 	))
 }
 
-// hackrf_si5351c_write(hackrf_device* device, uint16_t register_number, uint16_t value)
 func (h HackRF) SI5351CWrite(register, value uint16) error {
 	return Error(C.hackrf_si5351c_write(
 		(*C.hackrf_device)(h.ptr),
@@ -248,7 +255,6 @@ func (h HackRF) SI5351CWrite(register, value uint16) error {
 	))
 }
 
-// hackrf_rffc5071_read(hackrf_device* device, uint8_t register_number, uint16_t* value)
 func (h HackRF) RFFC5071Read(register uint8, value uint16) error {
 	return Error(C.hackrf_rffc5071_read(
 		(*C.hackrf_device)(h.ptr),
@@ -257,7 +263,6 @@ func (h HackRF) RFFC5071Read(register uint8, value uint16) error {
 	))
 }
 
-// hackrf_rffc5071_write(hackrf_device* device, uint8_t register_number, uint16_t value)
 func (h HackRF) RFFC5071Write(register uint8, value uint16) error {
 	return Error(C.hackrf_rffc5071_write(
 		(*C.hackrf_device)(h.ptr),
@@ -266,14 +271,12 @@ func (h HackRF) RFFC5071Write(register uint8, value uint16) error {
 	))
 }
 
-// hackrf_spiflash_erase(hackrf_device* device)
 func (h HackRF) SPIFlashErase() error {
 	return Error(C.hackrf_spiflash_erase(
 		(*C.hackrf_device)(h.ptr),
 	))
 }
 
-// hackrf_spiflash_read(hackrf_device* device, const uint32_t address, const uint16_t length, unsigned char* data)
 func (h HackRF) SPIFlashRead(address uint32, length uint16, data []uint8) error {
 	return Error(C.hackrf_spiflash_read(
 		(*C.hackrf_device)(h.ptr),
@@ -283,7 +286,6 @@ func (h HackRF) SPIFlashRead(address uint32, length uint16, data []uint8) error 
 	))
 }
 
-// hackrf_spiflash_write(hackrf_device* device, const uint32_t address, const uint16_t length, unsigned char* const data)
 func (h HackRF) SPIFlashWrite(address uint32, length uint16, data []uint8) error {
 	return Error(C.hackrf_spiflash_write(
 		(*C.hackrf_device)(h.ptr),
@@ -293,7 +295,6 @@ func (h HackRF) SPIFlashWrite(address uint32, length uint16, data []uint8) error
 	))
 }
 
-// hackrf_cpld_write(hackrf_device* device, unsigned char* const data, const unsigned int total_length)
 func (h HackRF) CPLDWrite(data []uint8, length uint) error {
 	return Error(C.hackrf_cpld_write(
 		(*C.hackrf_device)(h.ptr),
@@ -302,7 +303,6 @@ func (h HackRF) CPLDWrite(data []uint8, length uint) error {
 	))
 }
 
-// hackrf_set_freq(hackrf_device* device, const uint64_t freq_hz)
 func (h HackRF) SetFreq(freq uint64) error {
 	return Error(C.hackrf_set_freq(
 		(*C.hackrf_device)(h.ptr),
@@ -310,7 +310,6 @@ func (h HackRF) SetFreq(freq uint64) error {
 	))
 }
 
-// hackrf_set_baseband_filter_bandwidth(hackrf_device* device, const uint32_t bandwidth_hz)
 func (h HackRF) SetBasebandFilterBandwidth(bandwidth uint32) error {
 	return Error(C.hackrf_set_baseband_filter_bandwidth(
 		(*C.hackrf_device)(h.ptr),
@@ -360,7 +359,6 @@ func (rfpf RFPathFilter) String() string {
 	return "InvalidRFPathFilter"
 }
 
-// hackrf_set_freq_explicit(hackrf_device* device, const uint64_t if_freq_hz, const uint64_t lo_freq_hz, const enum rf_path_filter path)
 func (h HackRF) SetFreqExplicit(ifFreq, loFreq uint64, rfFilterPath RFPathFilter) error {
 	return Error(C.hackrf_set_freq_explicit(
 		(*C.hackrf_device)(h.ptr),
@@ -370,7 +368,6 @@ func (h HackRF) SetFreqExplicit(ifFreq, loFreq uint64, rfFilterPath RFPathFilter
 	))
 }
 
-// hackrf_set_sample_rate(hackrf_device* device, const double freq_hz)
 func (h HackRF) SetSampleRate(freq float64) error {
 	return Error(C.hackrf_set_sample_rate(
 		(*C.hackrf_device)(h.ptr),
@@ -378,7 +375,6 @@ func (h HackRF) SetSampleRate(freq float64) error {
 	))
 }
 
-// hackrf_set_sample_rate_manual(hackrf_device* device, const uint32_t freq_hz, const uint32_t divider)
 func (h HackRF) SetSampleRateManual(freq, divider uint32) error {
 	return Error(C.hackrf_set_sample_rate_manual(
 		(*C.hackrf_device)(h.ptr),
@@ -387,7 +383,6 @@ func (h HackRF) SetSampleRateManual(freq, divider uint32) error {
 	))
 }
 
-// hackrf_set_amp_enable(hackrf_device* device, const uint8_t value)
 func (h HackRF) SetAmp(enable bool) error {
 	var value byte
 	if enable {
@@ -399,7 +394,6 @@ func (h HackRF) SetAmp(enable bool) error {
 	))
 }
 
-// hackrf_set_lna_gain(hackrf_device* device, uint32_t value)
 func (h HackRF) SetLNAGain(db uint32) error {
 	return Error(C.hackrf_set_lna_gain(
 		(*C.hackrf_device)(h.ptr),
@@ -407,7 +401,6 @@ func (h HackRF) SetLNAGain(db uint32) error {
 	))
 }
 
-// hackrf_set_vga_gain(hackrf_device* device, uint32_t value)
 func (h HackRF) SetVGAGain(db uint32) error {
 	return Error(C.hackrf_set_vga_gain(
 		(*C.hackrf_device)(h.ptr),
@@ -415,7 +408,6 @@ func (h HackRF) SetVGAGain(db uint32) error {
 	))
 }
 
-// hackrf_set_txvga_gain(hackrf_device* device, uint32_t value)
 func (h HackRF) SetTXVGAGain(db uint32) error {
 	return Error(C.hackrf_set_txvga_gain(
 		(*C.hackrf_device)(h.ptr),
@@ -423,7 +415,6 @@ func (h HackRF) SetTXVGAGain(db uint32) error {
 	))
 }
 
-// hackrf_set_antenna_enable(hackrf_device* device, const uint8_t value)
 func (h HackRF) SetAntennaPower(enable bool) error {
 	var value byte
 	if enable {
@@ -437,12 +428,10 @@ func (h HackRF) SetAntennaPower(enable bool) error {
 	))
 }
 
-// uint32_t hackrf_compute_baseband_filter_bw_round_down_lt(const uint32_t bandwidth_hz);
 func ComputeBaseBandFilterBWNearest(freq uint32) (bw uint32) {
 	return uint32(C.hackrf_compute_baseband_filter_bw_round_down_lt((C.uint32_t)(freq)))
 }
 
-// uint32_t hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz);
 func ComputeBaseBandFilterBWBest(freq uint32) (bw uint32) {
 	return uint32(C.hackrf_compute_baseband_filter_bw((C.uint32_t)(freq)))
 }

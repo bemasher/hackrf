@@ -14,6 +14,6 @@ func go_callback(transfer C.hackrf_transfer) C.int {
 	// transfer.valid_length and set it's capacity to the same so the user
 	// can't walk off the end of the array if they try to do anything like
 	// appending to the slice.
-	buf := (*[1<<31 - 1]int8)(unsafe.Pointer(transfer.buffer))
+	buf := (*[MaxArrayLen]int8)(unsafe.Pointer(transfer.buffer))
 	return C.int(localCallback(buf[:transfer.valid_length:transfer.valid_length]))
 }
